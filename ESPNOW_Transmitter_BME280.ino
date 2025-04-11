@@ -9,190 +9,151 @@
   copies or substantial portions of the Software.
 */
 
-#include <esp_now.h>
-#include <WiFi.h>
-#include <esp_wifi.h>
-#include <Adafruit_BME280.h>
-#include <esp_sleep.h>
-#include <Wire.h>
-#include <BH1750.h>
-#include <SPI.h>
+// Required Libraries
+#include <esp_now.h>                // ESP-NOW communication
+#include <WiFi.h>                  // WiFi functionality
+#include <esp_wifi.h>              // ESP32 WiFi driver
+#include <Wire.h>                  // I2C communication
+#include <Adafruit_BME280.h>       // BME280 temperature, humidity, and pressure sensor
+#include <esp_sleep.h>             // Deep sleep functionality
+#include <BH1750.h>                // BH1750 light (lux) sensor
+#include <SPI.h>                   // SPI support (included in case SD is added later)
 
-// Sleep for 1 hours = 1 * 60 * 60 = 3600 seconds
-//uint64_t sleepTimeSeconds = 21600;
+// --- Pin Definitions ---
+#define I2C_SDA     25             // I2C SDA pin
+#define I2C_SCL     26             // I2C SCL pin
+#define BAT_ADC     33             // Battery voltage analog pin (not used in this code)
+#define SOIL_PIN    32             // Soil moisture analog input pin
+#define BOOT_PIN     0             // Boot button pin (optional)
+#define POWER_CTRL   4             // Power control pin (e.g., for sensor VCC line)
+#define USER_BUTTON 35             // Optional user button input
 
-// Pin Definitions
-#define I2C_SDA     25
-#define I2C_SCL     26
-#define BAT_ADC     33
-#define SALT_PIN    34
-#define SOIL_PIN    32
-#define BOOT_PIN    0
-#define POWER_CTRL  4
-#define USER_BUTTON 35
+// --- Calibration Values ---
+#define SOIL_DRY 3490              // Raw ADC value for dry soil
+#define SOIL_WET 1160              // Raw ADC value for wet soil
+#define BME280_ADDRESS 0x77        // I2C address for BME280 sensor (can be 0x76 or 0x77)
 
-// Sensor Types and Constants
-#define BME280_ADDR 0x77  // I2C address for BME280
+// --- Global Variables ---
+int luxRead;                       // Lux value from BH1750
 
-int luxRead;
+// MAC address of the receiver ESP32
+uint8_t broadcastAddress[] = {0xB4, 0x8A, 0x0A, 0x82, 0x3D, 0x08};
 
-// Broadcast Address (Receiver MAC Address)
-uint8_t broadcastAddress[] = {0xB4, 0x8A, 0x0A, 0x82, 0x3D, 0x08}; 
-
-// Structure to store sensor data
+// --- Data Structure for Sending Sensor Data via ESP-NOW ---
 typedef struct gnhc_data_struct {
-  int id;  // Transmitter ID
-  int t;   // Temperature
-  int h;   // Humidity
-  int s;   // Soil Moisture
-  int l;   // Lux (light level)
+  int id;   // Device ID
+  int t;    // Temperature (°C)
+  int h;    // Humidity (%)
+  int s;    // Soil moisture (%)
+  int l;    // Light (lux)
 } gnhc_data_struct;
 
-gnhc_data_struct gdata;  // Instance of gnhc_data_struct to store data
+gnhc_data_struct gdata;            // Data instance to populate and send
 
 // Sensor objects
-BH1750 lightMeter(0x23);  // I2C address for BH1750 Light Meter
-Adafruit_BME280 bme;      // BME280 Sensor object
+BH1750 lightMeter(0x23);           // BH1750 light sensor at I2C address 0x23
+Adafruit_BME280 bme;               // BME280 sensor object
 
-bool deviceConnected = false;  // Device connection status
-
-// Function to send data using ESP-NOW
+// --- Function to Send Data via ESP-NOW ---
 bool sendData(gnhc_data_struct data) {
   esp_err_t result = esp_now_send(0, (uint8_t*)&data, sizeof(gnhc_data_struct));
-
-  if (result == ESP_OK) {
-    Serial.println("Sent with success");
-    return true;
-  } else {
-    Serial.println("Error sending the data");
-    return false;
-  }
+  Serial.println(result == ESP_OK ? "Sent with success" : "Error sending the data");
+  return result == ESP_OK;
 }
 
-// Callback function for data sent confirmation
+// --- Callback After ESP-NOW Packet is Sent ---
 void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
   char macStr[18];
-  Serial.print("Packet to: ");
-  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x", 
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-  Serial.print(macStr);
-  Serial.print(" send status:\t");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  Serial.printf("Packet to: %s send status: %s\n", macStr,
+                status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }
 
-// Function to read battery
-float readBattery()
-{
-  int vref = 1100;
-  uint16_t volt = analogRead(BAT_ADC);
-  // Serial.print("Volt direct ");
-  // Serial.println(volt);
-  float battery_voltage = ((float)volt / 4095.0) * 2.0 * 3.3 * (vref) / 1000;
-  Serial.print("Battery Voltage: ");
-  Serial.println(battery_voltage);
-  battery_voltage = battery_voltage * 100;
-  return map(battery_voltage, 416, 290, 100, 0);
-}
-
-// Function to read soil moisture
-uint16_t readSoil() {
-  uint16_t soil = analogRead(SOIL_PIN);
-  uint16_t dryValue = 3490;  // Calibration for dry soil
-  uint16_t humidValue = 1160;  // Calibration for wet soil
-  uint16_t mappedSoil = map(soil, dryValue, humidValue, 0, 100);
-  return mappedSoil;
-}
-
-// Setup function to initialize sensors and ESP-NOW
+// --- Setup ---
 void setup() {
-  Serial.begin(115200);
-  
-  // Initialize Wi-Fi mode as Station and set the channel
-  WiFi.mode(WIFI_STA);
-
-  // Power on the BME280 sensor
-  pinMode(POWER_CTRL, OUTPUT);
-  digitalWrite(POWER_CTRL, HIGH);  // Power the sensor ON
-  delay(200);  // Wait for the sensor to power up
-
-  // Initialize I2C bus
-  bool wireOk = Wire.begin(I2C_SDA, I2C_SCL);
-  Serial.println(wireOk ? F("Wire ok") : F("Wire NOK"));
-
-  // Initialize the BME280 sensor
-  if (!bme.begin(BME280_ADDR)) {
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
-    while (1);  // Infinite loop if sensor is not found
-  }
+  Serial.begin(115200);                         // Start serial monitor
+  WiFi.mode(WIFI_STA);                          // Set WiFi to station mode
 
   // Initialize ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
-  
-  // Register send callback for ESP-NOW
+
+  // Register callback for send status
   esp_now_register_send_cb(OnDataSent);
 
-  // Add peer for communication
-  esp_now_peer_info_t peerInfo;
+  // Add receiver peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  
+
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
     return;
   }
 
-  // Attempt to initialize the BH1750 light meter
-  bool lightMeterOk = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
-  Serial.println(lightMeterOk ? F("BH1750 Advanced begin") : F("Error initializing BH1750"));
+  // Power up sensors (if POWER_CTRL controls sensor power)
+  pinMode(POWER_CTRL, OUTPUT);
+  digitalWrite(POWER_CTRL, 1);
+  delay(1000); // Wait for sensors to power up
 
-  // Display battery voltage
-  Serial.print("Battery level: ");
-  Serial.println(readBattery());
+  // Initialize I2C
+  bool wireOk = Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.println(wireOk ? "Wire ok" : "Wire NOK");
+
+  // Initialize BH1750 Light Sensor
+  bool lightMeterOk = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
+  Serial.println(lightMeterOk ? "BH1750 initialized" : "Error initializing BH1750");
+
+  // Initialize BME280 Sensor
+  if (!bme.begin(BME280_ADDRESS)) {
+    Serial.println("Could not find BME280 sensor!");
+  } else {
+    Serial.println("BME280 initialized");
+  }
 }
 
-// Main loop to read sensors and send data
+// --- Main Loop ---
 void loop() {
-  // Read Light Level
+  // Read light level (lux)
   luxRead = lightMeter.readLightLevel();
-  Serial.print("Lux: "); 
-  Serial.println(luxRead);
   gdata.l = luxRead;
+  Serial.print("Lux: "); Serial.println(luxRead);
 
-  // Read Temperature and Humidity from BME280
-  gdata.t = bme.readTemperature();
-  gdata.h = bme.readHumidity();
-
-  Serial.print("Temperature: ");
-  Serial.print(gdata.t);
-  Serial.println("*C");
-
-  Serial.print("Humidity: ");
-  Serial.print(gdata.h);
-  Serial.println("%");
-
-  // Read Soil Moisture
-  uint16_t soil = readSoil();
-  gdata.s = soil;
-  Serial.print("Soil Moisture: ");
-  Serial.print(soil);
-  Serial.println("%");
-
-  // Send Data
-  gdata.id = 1;  // Transmitter ID
-  if (sendData(gdata)) {
-    Serial.println("Data sent successfully.");
+  // Read temperature from BME280
+  float temp = bme.readTemperature();
+  if (!isnan(temp)) {
+    gdata.t = temp;
+    Serial.print("Temp: "); Serial.println(temp);
   }
 
-  // Add delay before sending data
-  delay(5000);
+  // Read humidity from BME280
+  float hum = bme.readHumidity();
+  if (!isnan(hum)) {
+    gdata.h = hum;
+    Serial.print("Humidity: "); Serial.println(hum);
+  }
 
-  // Configure the timer to wake up the ESP32
-  //Serial.println("Entering deep sleep...");
-  //esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000); /* Sleep until the next measurement */
-  // Put the ESP32 into deep sleep mode
-  //esp_deep_sleep_start();
+  // Read soil moisture and map it to 0–100%
+  uint16_t soil = analogRead(SOIL_PIN);
+  gdata.s = map(soil, SOIL_DRY, SOIL_WET, 0, 100);
+  Serial.print("Soil Moisture: "); Serial.println(gdata.s);
+
+  // Set unique device ID
+  gdata.id = 3;
+
+  // Send data via ESP-NOW
+  sendData(gdata);
+
+  delay(5000); // Wait 5 seconds before next transmission
+
+  // Optional: Enter deep sleep (uncomment to use)
+  /*
+  Serial.println("Entering deep sleep...");
+  esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000);  // sleepTimeSeconds must be defined
+  esp_deep_sleep_start();
+  */
 }
