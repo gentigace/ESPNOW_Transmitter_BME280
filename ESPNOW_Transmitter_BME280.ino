@@ -19,6 +19,9 @@
 #include <BH1750.h>                // BH1750 light (lux) sensor
 #include <SPI.h>                   // SPI support (included in case SD is added later)
 
+// --- Optional Deep Sleep Time (in seconds) ---
+uint64_t sleepTimeSeconds = 21600; // 6 hours
+
 // --- Pin Definitions ---
 #define I2C_SDA     25             // I2C SDA pin
 #define I2C_SCL     26             // I2C SCL pin
@@ -151,9 +154,7 @@ void loop() {
   delay(5000); // Wait 5 seconds before next transmission
 
   // Optional: Enter deep sleep (uncomment to use)
-  /*
   Serial.println("Entering deep sleep...");
   esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000);  // sleepTimeSeconds must be defined
   esp_deep_sleep_start();
-  */
 }
