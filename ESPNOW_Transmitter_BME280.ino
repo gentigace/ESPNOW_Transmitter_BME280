@@ -20,7 +20,7 @@
 #include <SPI.h>                   // SPI support (included in case SD is added later)
 
 // --- Optional Deep Sleep Time (in seconds) ---
-uint64_t sleepTimeSeconds = 21600; // 6 hours
+//uint64_t sleepTimeSeconds = 21600; // 6 hours
 
 // --- Pin Definitions ---
 #define I2C_SDA     25             // I2C SDA pin
@@ -57,19 +57,17 @@ gnhc_data_struct gdata;            // Data instance to populate and send
 BH1750 lightMeter(0x23);           // BH1750 light sensor at I2C address 0x23
 Adafruit_BME280 bme;               // BME280 sensor object
 
-// --- Function to Send Data via ESP-NOW ---
+// 3) Send to your peer explicitly (safer than 0 / broadcast)
 bool sendData(gnhc_data_struct data) {
-  esp_err_t result = esp_now_send(0, (uint8_t*)&data, sizeof(gnhc_data_struct));
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&data, sizeof(gnhc_data_struct));
   Serial.println(result == ESP_OK ? "Sent with success" : "Error sending the data");
   return result == ESP_OK;
 }
 
 // --- Callback After ESP-NOW Packet is Sent ---
-void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
-  char macStr[18];
-  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
-           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-  Serial.printf("Packet to: %s send status: %s\n", macStr,
+void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status) {
+  // Some cores expose info->dest_addr, others just provide tx meta; to be portable, just print status.
+  Serial.printf("Packet send status: %s\n",
                 status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }
 
@@ -155,6 +153,6 @@ void loop() {
 
   // Optional: Enter deep sleep (uncomment to use)
   Serial.println("Entering deep sleep...");
-  esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000);  // sleepTimeSeconds must be defined
-  esp_deep_sleep_start();
+  //esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000);  // sleepTimeSeconds must be defined
+  //esp_deep_sleep_start();
 }
